@@ -33,7 +33,16 @@ function equalityKey(text) {
 export function globalState(settings) {
     settings.note ??= {};
     settings[KEY] ??= { items: [], defaultHistory: [], title: '기존 기본 작가노트' };
+    settings[KEY].legacyScan ??= Boolean(settings.note.allowWIScan);
     return settings[KEY];
+}
+
+// Snapshot legacy options once; later native changes must not change other items.
+export function itemSettings(item, legacyScan = false) {
+    item.position = integer(item.position, 1, 2);
+    item.role = integer(item.role, 0, 2);
+    item.scan ??= Boolean(legacyScan);
+    return item;
 }
 
 export function chatState(metadata) {
@@ -48,10 +57,20 @@ export function hasChat(ctx) {
 
 /** Keep inherited native notes linked, while preserving edited chat notes. */
 export function reconcile(ctx) {
+    const needsLegacyScan = ctx.extensionSettings[KEY]?.legacyScan === undefined;
     const global = globalState(ctx.extensionSettings);
     const base = nativeNote(ctx.extensionSettings.note, true);
     const currentDefault = signature(base);
-    let settingsChanged = false;
+    let settingsChanged = needsLegacyScan;
+    const migrate = items => {
+        let changed = false;
+        for (const item of items) {
+            if (item.scan === undefined || item.role === undefined || item.position === undefined) changed = true;
+            itemSettings(item, global.legacyScan);
+        }
+        return changed;
+    };
+    settingsChanged = migrate(global.items) || settingsChanged;
     if (global.lastDefault !== currentDefault) {
         const previousKey = global.lastDefault && equalityKey(global.lastDefault);
         if (previousKey && !global.defaultHistory.includes(previousKey)) {
@@ -65,7 +84,7 @@ export function reconcile(ctx) {
     const local = chatState(ctx.chatMetadata);
     const native = nativeNote(ctx.chatMetadata);
     const current = signature(native);
-    let metadataChanged = fresh;
+    let metadataChanged = migrate(local.items) || fresh;
     if (local.linkedDefault === undefined) {
         local.linkedDefault = !native.text || current === currentDefault || global.defaultHistory.includes(equalityKey(current));
         local.lastMirrored = current;
@@ -103,13 +122,14 @@ export function prompts(ctx) {
     const base = nativeNote(ctx.extensionSettings.note, true);
     const localText = nativeNote(ctx.chatMetadata).text;
     if (!local.linkedDefault && base.text.trim() && base.text !== localText && due(base.interval, ctx.chat)) {
-        out.push({ key: `${PREFIX}default`, ...base });
+        out.push({ key: `${PREFIX}default`, ...base, scan: Boolean(ctx.extensionSettings.note.allowWIScan) });
     }
     for (const [scope, items] of [['common', global.items], ['chat', local.items]]) {
         items.forEach((item, index) => {
+            itemSettings(item, global.legacyScan);
             if (item.enabled && item.text.trim()) {
                 out.push({ key: `${PREFIX}${scope}:${String(index).padStart(6, '0')}`,
-                    text: item.text, depth: integer(item.depth), position: 1, role: 0 });
+                    text: item.text, depth: integer(item.depth), position: item.position, role: item.role, scan: Boolean(item.scan) });
             }
         });
     }
@@ -117,5 +137,5 @@ export function prompts(ctx) {
 }
 
 export function newItem() {
-    return { id: crypto.randomUUID(), title: '새 항목', text: '', depth: 4, enabled: true };
+    return { id: crypto.randomUUID(), title: '새 항목', text: '', depth: 4, position: 1, role: 0, scan: false, enabled: true };
 }

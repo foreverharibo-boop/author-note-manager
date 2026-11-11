@@ -110,3 +110,43 @@ test('default frequency retains native semantics and depths are bounded', () => 
     assert.equal(integer('bad'), 4);
     assert.equal(integer(1e9), 9999);
 });
+
+test('each item keeps independent placement, role and WI scan across native changes and reloads', () => {
+    const ctx = fixture();
+    reconcile(ctx);
+    globalState(ctx.extensionSettings).items.push({ text: '공통 지침', depth: 3, enabled: true, position: 2, role: 0, scan: true });
+    chatState(ctx.chatMetadata).items.push(
+        { text: '사용자 지침', depth: 0, enabled: true, position: 1, role: 1, scan: false },
+        { text: '응답 지침', depth: 8, enabled: true, position: 1, role: 2, scan: true },
+        { text: '후방 지침', depth: 2, enabled: true, position: 0, role: 0, scan: false },
+    );
+    const expected = [[2, 3, 0, true], [1, 0, 1, false], [1, 8, 2, true], [0, 2, 0, false]];
+    const settings = c => prompts(c).map(p => [p.position, p.depth, p.role, p.scan]);
+    assert.deepEqual(settings(ctx), expected);
+    ctx.extensionSettings.note.allowWIScan = true;
+    assert.deepEqual(settings(ctx), expected);
+    const restored = JSON.parse(JSON.stringify(ctx));
+    reconcile(restored);
+    assert.deepEqual(settings(restored), expected);
+});
+
+test('legacy items preserve previous scan behavior including unopened chats and disabled items', () => {
+    const ctx = fixture();
+    ctx.extensionSettings.note.allowWIScan = true;
+    ctx.extensionSettings[KEY] = { items: [{ text: '공통', depth: 6, enabled: false }], defaultHistory: [] };
+    ctx.chatMetadata[KEY] = { items: [{ text: '기존', depth: 0, enabled: true }] };
+    const result = reconcile(ctx);
+    assert.equal(result.settingsChanged, true);
+    assert.equal(result.metadataChanged, true);
+    assert.equal(ctx.extensionSettings[KEY].items[0].scan, true);
+    assert.deepEqual(prompts(ctx).map(p => [p.depth, p.position, p.role, p.scan]), [[0, 1, 0, true]]);
+    ctx.extensionSettings.note.allowWIScan = false;
+    ctx.chatId = 'unopened';
+    ctx.chatMetadata = fixture().chatMetadata;
+    ctx.chatMetadata[KEY] = { items: [{ text: '오래된 방', depth: 7, enabled: true }] };
+    reconcile(ctx);
+    assert.equal(prompts(ctx)[0].scan, true);
+    ctx.chatMetadata[KEY].items[0].scan = false;
+    assert.equal(prompts(ctx)[0].scan, false);
+    assert.equal(prompts(ctx)[0].text, '오래된 방');
+});

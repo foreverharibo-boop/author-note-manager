@@ -1,11 +1,12 @@
 import { setFloatingPrompt } from '../../../authors-note.js';
-import { PREFIX, integer, globalState, chatState, hasChat, reconcile, prompts, newItem } from './model.js';
+import { PREFIX, integer, globalState, chatState, hasChat, reconcile, prompts, newItem, itemSettings } from './model.js';
 
 const context = () => SillyTavern.getContext();
 const sections = new Map();
 let syncing = false;
 let mounted = false;
 let foldSequence = 0;
+let optionSequence = 0;
 
 function element(tag, className, text) {
     const node = document.createElement(tag);
@@ -30,7 +31,7 @@ function refreshPrompts() {
     }
     for (const note of prompts(ctx)) {
         ctx.setExtensionPrompt(note.key, note.text, note.position, note.depth,
-            ctx.extensionSettings.note?.allowWIScan ?? false, note.role);
+            note.scan, note.role);
     }
 }
 
@@ -116,6 +117,7 @@ function foldControl(header, content, getCollapsed, setCollapsed) {
 }
 
 function renderCard(scope, item, owner) {
+    itemSettings(item, globalState(context().extensionSettings).legacyScan);
     const card = element('section', 'ani-card');
     card.dataset.enabled = String(item.enabled);
     const top = element('div', 'inline-drawer-header ani-card-top');
@@ -151,13 +153,47 @@ function renderCard(scope, item, owner) {
         changed();
     });
     const bottom = element('div', 'ani-card-bottom');
-    const depthLabel = element('label', 'ani-depth-label', '깊이');
+    const options = element('div', 'ani-options');
+    const scanLabel = element('label', 'checkbox_label ani-scan-label');
+    const scan = element('input', 'ani-scan');
+    scan.type = 'checkbox';
+    scan.checked = Boolean(item.scan);
+    scan.addEventListener('change', () => {
+        if (!editable()) return;
+        item.scan = scan.checked;
+        changed();
+    });
+    scanLabel.append(scan, element('span', '', '월드인포를 스캔 대상에 포함'));
+    options.append(scanLabel);
+    const positions = element('div', 'floating_prompt_radio_group ani-positions');
+    const radioName = `ani-position-${++optionSequence}`;
+    let inChatRow;
+    for (const [value, text] of [[2, '메인 프롬프트 전/스토리 문자열'], [0, '메인 프롬프트 이후 / 스토리 문자열'], [1, '채팅 내 @ Depth']]) {
+        const row = element('div', 'ani-position-row');
+        const label = element('label', 'checkbox_label');
+        const radio = element('input', 'ani-position');
+        radio.type = 'radio';
+        radio.name = radioName;
+        radio.value = value;
+        radio.checked = item.position === value;
+        radio.addEventListener('change', () => {
+            if (!editable() || !radio.checked) return;
+            item.position = value;
+            updatePlacement();
+            changed();
+        });
+        label.append(radio, element('span', '', text));
+        row.append(label);
+        positions.append(row);
+        if (value === 1) inChatRow = row;
+    }
     const depth = element('input', 'text_pole textarea_compact widthNatural ani-depth');
     depth.type = 'number';
     depth.min = '0';
     depth.max = '9999';
     depth.step = '1';
-    depth.value = item.depth;
+    depth.value = integer(item.depth);
+    depth.setAttribute('aria-label', '채팅 내 삽입 깊이');
     depth.addEventListener('input', () => {
         if (!editable() || depth.value === '' || !depth.validity.valid) return;
         item.depth = integer(depth.value);
@@ -169,7 +205,26 @@ function renderCard(scope, item, owner) {
         depth.value = item.depth;
         changed();
     });
-    depthLabel.append(depth);
+    const role = element('select', 'text_pole widthNatural ani-role');
+    role.setAttribute('aria-label', '삽입 역할');
+    for (const [value, text] of [[0, '시스템'], [1, '사용자'], [2, '어시스턴트']]) {
+        const option = element('option', '', text);
+        option.value = value;
+        role.append(option);
+    }
+    role.value = item.role;
+    role.addEventListener('change', () => {
+        if (!editable()) return;
+        item.role = integer(role.value, 0, 2);
+        changed();
+    });
+    function updatePlacement() {
+        depth.disabled = role.disabled = item.position !== 1;
+    }
+    updatePlacement();
+    inChatRow.classList.add('ani-in-chat');
+    inChatRow.append(depth, element('span', 'ani-as', '~처럼'), role);
+    options.append(positions);
     const remove = element('button', 'menu_button ani-remove', '삭제');
     remove.type = 'button';
     remove.addEventListener('click', () => {
@@ -180,9 +235,9 @@ function renderCard(scope, item, owner) {
         changed();
         renderLists();
     });
-    bottom.append(depthLabel, remove);
+    bottom.append(remove);
     const content = element('div', 'ani-content');
-    content.append(body, bottom);
+    content.append(body, options, bottom);
     foldControl(top, content, () => item.collapsed, collapsed => {
         if (!editable()) return;
         item.collapsed = collapsed;
@@ -281,7 +336,7 @@ function mountSection(scope, textareaId) {
     const extra = element('div', 'ani-extra');
     extra.append(element('hr', 'sysHR'));
     extra.append(element('div', 'ani-extra-heading', scope === 'common' ? '공통 추가 항목' : '이 채팅의 추가 항목'));
-    extra.append(element('p', 'ani-hint', '추가 항목은 각각 지정한 깊이에 시스템 메시지로 들어갑니다. 깊이 0은 마지막 메시지 위치입니다.'));
+    extra.append(element('p', 'ani-hint', '항목마다 월드인포 스캔 포함 여부와 삽입 위치·깊이·역할을 따로 설정합니다. 깊이와 역할은 채팅 내 삽입에 적용됩니다.'));
     const list = element('div', 'ani-list');
     const add = element('button', 'menu_button ani-add', '+ 항목 추가');
     add.type = 'button';
@@ -302,6 +357,7 @@ function initialize() {
     if (mounted) return;
     if (!document.getElementById('extension_floating_prompt') || !document.getElementById('extension_floating_default')) return;
     mounted = true;
+    synchronize();
     mountSection('chat', 'extension_floating_prompt');
     mountSection('common', 'extension_floating_default');
     const nativeSelector = [

@@ -29,7 +29,25 @@ export function itemSettings(item, legacyScan = false) {
     item.position = integer(item.position, 1, 2);
     item.role = integer(item.role, 0, 2);
     item.scan ??= Boolean(legacyScan);
+    item.interval = integer(item.interval, 1);
+    if (item.enabled === false && item.interval > 0) {
+        item.previousInterval = item.interval;
+        item.interval = 0;
+    }
+    if (item.interval === 0) item.enabled = false;
     return item;
+}
+
+export function setItemInterval(item, value) {
+    const interval = integer(value, item.interval ?? 1);
+    if (item.interval > 0) item.previousInterval = item.interval;
+    item.interval = interval;
+    item.enabled = interval > 0;
+    if (interval > 0) item.previousInterval = interval;
+}
+
+export function setItemEnabled(item, enabled) {
+    setItemInterval(item, enabled ? (item.interval || integer(item.previousInterval, 1) || 1) : 0);
 }
 
 export function chatState(metadata) {
@@ -51,7 +69,9 @@ export function reconcile(ctx, { newChat = false } = {}) {
         let changed = false;
         for (const item of items) {
             if (item.scan === undefined || item.role === undefined || item.position === undefined) changed = true;
+            const before = [item.interval, item.enabled, item.previousInterval];
             itemSettings(item, global.legacyScan);
+            if (before.some((value, index) => value !== [item.interval, item.enabled, item.previousInterval][index])) changed = true;
         }
         return changed;
     };
@@ -63,6 +83,7 @@ export function reconcile(ctx, { newChat = false } = {}) {
         global.templateVersion = 1;
         settingsChanged = true;
     }
+    if (Array.isArray(global.legacySharedItems)) settingsChanged = migrate(global.legacySharedItems) || settingsChanged;
     if (!hasChat(ctx)) return { settingsChanged, metadataChanged: false };
     const fresh = !ctx.chatMetadata[KEY];
     const local = chatState(ctx.chatMetadata);
@@ -107,7 +128,7 @@ export function prompts(ctx) {
     const out = [];
     local.items.forEach((item, index) => {
         itemSettings(item, global.legacyScan);
-        if (item.enabled && item.text.trim()) {
+        if (item.enabled && item.text.trim() && due(item.interval, ctx.chat)) {
             out.push({ key: `${PREFIX}chat:${String(index).padStart(6, '0')}`,
                 text: item.text, depth: integer(item.depth), position: item.position, role: item.role, scan: Boolean(item.scan) });
         }
@@ -116,5 +137,5 @@ export function prompts(ctx) {
 }
 
 export function newItem() {
-    return { id: crypto.randomUUID(), title: '새 항목', text: '', depth: 4, position: 1, role: 0, scan: false, enabled: true };
+    return { id: crypto.randomUUID(), title: '새 항목', text: '', interval: 1, depth: 4, position: 1, role: 0, scan: false, enabled: true };
 }

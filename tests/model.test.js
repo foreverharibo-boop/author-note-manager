@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { KEY, globalState, chatState, reconcile, prompts, due, integer } from '../model.js';
+import { KEY, globalState, chatState, reconcile, prompts, due, integer, setItemInterval, setItemEnabled, newItem } from '../model.js';
 
 function fixture(text = 'Default note') {
     return { chatId: 'chat-a', characterId: 0, groupId: null, chat: [],
@@ -117,4 +117,52 @@ test('greeting-only and empty existing chats do not inherit templates without a 
         reconcile(ctx,{newChat:true});assert.deepEqual(texts(ctx),['Template body']);
         chatState(ctx.chatMetadata).items=[];reconcile(ctx,{newChat:true});assert.deepEqual(texts(ctx),[]);
     }
+});
+
+
+test('each item follows its own native-style interval across user and assistant messages',()=>{
+    const ctx=fixture();
+    for(const interval of [0,1,2,3])template(ctx,{id:String(interval),text:String(interval),interval,enabled:interval!==0});
+    startChat(ctx);ctx.chatMetadata.note_interval=0;
+    const expected=[['1'],['1'],['1','2'],['1','3'],['1','2'],['1'],['1','2','3']];
+    for(let users=0;users<=6;users++){
+        ctx.chat=[{is_user:false,mes:'Greeting'},...Array.from({length:users},(_,i)=>({is_user:true,mes:String(i),is_system:i===0}))];
+        assert.deepEqual(texts(ctx),expected[users]);
+        ctx.chat.push({is_user:false,mes:'Assistant reply'});assert.deepEqual(texts(ctx),expected[users]);
+        assert.deepEqual(texts(ctx),expected[users],'regeneration does not advance a separate counter');
+    }
+});
+test('frequency zero and toggle agree, and re-enabling restores the last positive interval',()=>{
+    const item=newItem();assert.equal(item.interval,1);
+    setItemInterval(item,3);assert.equal(item.enabled,true);
+    setItemEnabled(item,false);assert.equal(item.interval,0);assert.equal(item.enabled,false);assert.equal(item.previousInterval,3);
+    setItemEnabled(item,true);assert.equal(item.interval,3);assert.equal(item.enabled,true);
+    setItemInterval(item,0);assert.equal(item.enabled,false);setItemEnabled(item,true);assert.equal(item.interval,3);
+    setItemInterval(item,2);setItemEnabled(item,false);setItemEnabled(item,true);assert.equal(item.interval,2);
+    setItemInterval(item,0);setItemInterval(item,5);assert.equal(item.enabled,true);assert.equal(item.interval,5);
+});
+test('intervals copy once and edits remain independent between defaults and chats',()=>{
+    const ctx=fixture();template(ctx,{interval:3});startChat(ctx);const a=ctx.chatMetadata;
+    setItemInterval(globalState(ctx.extensionSettings).items[0],5);reconcile(ctx);assert.equal(chatState(a).items[0].interval,3);
+    ctx.chatId='b';ctx.chatMetadata=fixture().chatMetadata;startChat(ctx);assert.equal(chatState(ctx.chatMetadata).items[0].interval,5);
+    setItemInterval(chatState(ctx.chatMetadata).items[0],2);assert.equal(chatState(a).items[0].interval,3);assert.equal(globalState(ctx.extensionSettings).items[0].interval,5);
+    const restored=JSON.parse(JSON.stringify(ctx));reconcile(restored);assert.equal(chatState(restored.chatMetadata).items[0].interval,2);
+});
+test('existing on/off items and unopened legacy snapshots retain their old injection behavior',()=>{
+    const ctx=fixture();ctx.extensionSettings[KEY]={items:[],templateVersion:1,legacyScan:false,legacySharedItems:[{text:'Old shared',enabled:true,depth:4}]};
+    ctx.chatMetadata[KEY]={items:[{text:'On',enabled:true,depth:4},{text:'Off',enabled:false,depth:4}],templateInitialized:true,defaultsApplied:true};
+    const result=reconcile(ctx);assert(result.settingsChanged&&result.metadataChanged);
+    assert.deepEqual(chatState(ctx.chatMetadata).items.map(i=>[i.interval,i.enabled]),[[1,true],[0,false]]);
+    assert.deepEqual(texts(ctx),['On']);assert.equal(globalState(ctx.extensionSettings).legacySharedItems[0].interval,1);
+    const repeat=reconcile(ctx);assert.equal(repeat.settingsChanged,false);assert.equal(repeat.metadataChanged,false);
+    const off=chatState(ctx.chatMetadata).items[1];setItemEnabled(off,true);assert.equal(off.interval,1);assert.deepEqual(texts(ctx),['On','Off']);
+});
+test('a disabled template restores its saved interval independently in a new chat',()=>{
+    const ctx=fixture();const source=template(ctx,{interval:4});setItemEnabled(source,false);startChat(ctx);
+    const copy=chatState(ctx.chatMetadata).items[0];setItemEnabled(copy,true);assert.equal(copy.interval,4);assert.equal(source.interval,0);assert.equal(source.enabled,false);
+});
+test('interval gates every placement and scan role without changing its settings',()=>{
+    const ctx=fixture();for(const position of [0,1,2])template(ctx,{id:String(position),text:String(position),position,role:2,scan:true,depth:8,interval:2});
+    startChat(ctx);ctx.chat=[{is_user:true}];assert.deepEqual(prompts(ctx),[]);
+    ctx.chat.push({is_user:true});assert.deepEqual(prompts(ctx).map(p=>[p.position,p.role,p.scan,p.depth]),[[0,2,true,8],[1,2,true,8],[2,2,true,8]]);
 });

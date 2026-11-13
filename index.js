@@ -1,5 +1,5 @@
 import { setFloatingPrompt } from '../../../authors-note.js';
-import { PREFIX, integer, globalState, chatState, hasChat, reconcile, prompts, newItem, itemSettings } from './model.js';
+import { PREFIX, integer, globalState, chatState, hasChat, reconcile, prompts, newItem, itemSettings, setItemInterval, setItemEnabled } from './model.js';
 
 const context = () => SillyTavern.getContext();
 const sections = new Map();
@@ -124,8 +124,8 @@ function renderCard(scope, item, owner) {
     });
     const toggle = switchControl(`${item.title} 사용`, item.enabled, enabled => {
         if (!editable()) return;
-        item.enabled = enabled;
-        card.dataset.enabled = String(enabled);
+        setItemEnabled(item, enabled);
+        updateInterval();
         changed();
     });
     top.append(toggle.label, title);
@@ -153,6 +153,38 @@ function renderCard(scope, item, owner) {
     });
     scanLabel.append(scan, element('span', '', '월드인포를 스캔 대상에 포함'));
     options.append(scanLabel);
+    const frequencyRow = element('label', 'ani-in-chat ani-position-row');
+    const interval = element('input', 'text_pole textarea_compact widthNatural ani-interval');
+    interval.type = 'number';
+    interval.min = '0';
+    interval.max = '9999';
+    interval.step = '1';
+    interval.setAttribute('aria-label', '삽입 빈도');
+    interval.title = '0: 주입 끄기 · 1: 매번 · 2 이상: 유저 메시지 수 기준 N회마다';
+    function updateInterval() {
+        interval.value = item.interval;
+        toggle.input.checked = Boolean(item.enabled);
+        toggle.caption.textContent = item.enabled ? '켜짐' : '꺼짐';
+        toggle.label.title = item.enabled ? '끄기' : '켜기';
+        card.dataset.enabled = String(item.enabled);
+    }
+    interval.addEventListener('input', () => {
+        if (!editable() || interval.value === '' || !interval.validity.valid) return;
+        setItemInterval(item, interval.value);
+        updateInterval();
+        changed();
+    });
+    interval.addEventListener('change', () => {
+        if (!editable()) return;
+        if (interval.value !== '' && interval.validity.valid) {
+            setItemInterval(item, interval.value);
+            changed();
+        }
+        updateInterval();
+    });
+    updateInterval();
+    frequencyRow.append(element('span', '', '삽입 빈도'), interval, element('span', '', '회마다 · 0은 끄기'));
+    options.append(frequencyRow);
     const positions = element('div', 'floating_prompt_radio_group ani-positions');
     const radioName = `ani-position-${++optionSequence}`;
     let inChatRow;

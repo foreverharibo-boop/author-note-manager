@@ -17,7 +17,7 @@
 .ani-position-row { margin: 12px 0; }
 .ani-in-chat { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
 .ani-in-chat > .checkbox_label { flex: 0 1 auto; }
-.ani-depth { width: 4.5em; margin: 0; }
+.ani-depth, .ani-interval { width: 4.5em; margin: 0; }
 .ani-role { width: auto; max-width: 100%; margin: 0; }
 .ani-as { white-space: nowrap; }
 .ani-options :disabled { opacity: .5; }

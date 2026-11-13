@@ -263,7 +263,7 @@ function renderLists() {
         section.nativeTitle.value = owner.title;
         section.fold.update();
         for (const item of owner.items) {
-            if (section.list.childElementCount) section.list.append(element('hr', 'sysHR'));
+            section.list.append(element('hr', 'sysHR'));
             section.list.append(renderCard(scope, item, owner));
         }
     }
@@ -333,10 +333,6 @@ function mountSection(scope, textareaId) {
             state(scope).nativeCollapsed = collapsed;
             save(scope);
         });
-    const extra = element('div', 'ani-extra');
-    extra.append(element('hr', 'sysHR'));
-    extra.append(element('div', 'ani-extra-heading', scope === 'common' ? '공통 추가 항목' : '이 채팅의 추가 항목'));
-    extra.append(element('p', 'ani-hint', '항목마다 월드인포 스캔 포함 여부와 삽입 위치·깊이·역할을 따로 설정합니다. 깊이와 역할은 채팅 내 삽입에 적용됩니다.'));
     const list = element('div', 'ani-list');
     const add = element('button', 'menu_button ani-add', '+ 항목 추가');
     add.type = 'button';
@@ -347,8 +343,7 @@ function mountSection(scope, textareaId) {
         renderLists();
         list.lastElementChild?.querySelector('.ani-title')?.focus();
     });
-    extra.append(list, add);
-    container.append(extra);
+    container.append(list, add);
     sections.set(scope, { list, add, nativeTitle, toggle, linked, fold });
     return true;
 }

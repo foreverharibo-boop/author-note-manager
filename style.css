@@ -2,8 +2,6 @@
 .ani-native-section, .ani-card, .ani-content { min-width: 0; }
 .ani-original-caption { display: none; }
 .ani-native-section .ani-hint { font-size: smaller; line-height: 1.5; margin: 5px 0; }
-.ani-extra { margin-top: 10px; }
-.ani-extra-heading { font-weight: bold; }
 .ani-list { display: flex; flex-direction: column; }
 .ani-card-top { display: grid; grid-template-columns: 2.8em minmax(0, 1fr) 2.2em; align-items: center; width: 100%; box-sizing: border-box; gap: 0; }
 .ani-title { grid-column: 2; grid-row: 1; box-sizing: border-box; width: 100%; min-width: 0; min-height: 2.1em; margin: 0; }

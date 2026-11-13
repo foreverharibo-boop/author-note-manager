@@ -17,22 +17,9 @@ export function nativeNote(source, defaults = false) {
     };
 }
 
-export const signature = note => JSON.stringify(note);
-
-// Compact equality keys avoid keeping a complete copy of the default on every keystroke.
-function equalityKey(text) {
-    let a = 2166136261, b = 5381;
-    for (let i = 0; i < text.length; i++) {
-        const c = text.charCodeAt(i);
-        a = Math.imul(a ^ c, 16777619);
-        b = Math.imul(b, 33) ^ c;
-    }
-    return `${text.length}:${a >>> 0}:${b >>> 0}`;
-}
-
 export function globalState(settings) {
     settings.note ??= {};
-    settings[KEY] ??= { items: [], defaultHistory: [], title: '기존 기본 작가노트' };
+    settings[KEY] ??= { items: [], templateVersion: 1, title: '기존 기본 작가노트' };
     settings[KEY].legacyScan ??= Boolean(settings.note.allowWIScan);
     return settings[KEY];
 }
@@ -55,12 +42,10 @@ export function hasChat(ctx) {
         && (ctx.groupId != null || ctx.characterId != null);
 }
 
-/** Keep inherited native notes linked, while preserving edited chat notes. */
-export function reconcile(ctx) {
+/** Defaults are templates. Each chat owns a one-time, independent snapshot. */
+export function reconcile(ctx, { newChat = false } = {}) {
     const needsLegacyScan = ctx.extensionSettings[KEY]?.legacyScan === undefined;
     const global = globalState(ctx.extensionSettings);
-    const base = nativeNote(ctx.extensionSettings.note, true);
-    const currentDefault = signature(base);
     let settingsChanged = needsLegacyScan;
     const migrate = items => {
         let changed = false;
@@ -71,39 +56,40 @@ export function reconcile(ctx) {
         return changed;
     };
     settingsChanged = migrate(global.items) || settingsChanged;
-    if (global.lastDefault !== currentDefault) {
-        const previousKey = global.lastDefault && equalityKey(global.lastDefault);
-        if (previousKey && !global.defaultHistory.includes(previousKey)) {
-            global.defaultHistory.push(previousKey);
-        }
-        global.lastDefault = currentDefault;
+    // Freeze old shared items once, before later template edits. Unopened legacy
+    // chats must not inherit whatever the user happens to change them to later.
+    if (global.templateVersion !== 1) {
+        global.legacySharedItems = structuredClone(global.items);
+        global.templateVersion = 1;
         settingsChanged = true;
     }
-    if (!hasChat(ctx)) return { settingsChanged, metadataChanged: false, linked: false };
+    if (!hasChat(ctx)) return { settingsChanged, metadataChanged: false };
     const fresh = !ctx.chatMetadata[KEY];
     const local = chatState(ctx.chatMetadata);
-    const native = nativeNote(ctx.chatMetadata);
-    const current = signature(native);
     let metadataChanged = migrate(local.items) || fresh;
-    if (local.linkedDefault === undefined) {
-        local.linkedDefault = !native.text || current === currentDefault || global.defaultHistory.includes(equalityKey(current));
-        local.lastMirrored = current;
-        metadataChanged = true;
-    } else if (local.linkedDefault && current !== local.lastMirrored) {
-        local.linkedDefault = false;
+    if (local.templateInitialized !== true) {
+        // Existing chats are never guessed to be new from their message count.
+        const source = fresh ? [] : (global.legacySharedItems || []);
+        local.items = [...structuredClone(source), ...local.items];
+        local.defaultsApplied = !fresh;
+        local.templateInitialized = true;
+        delete local.linkedDefault;
+        delete local.lastMirrored;
         metadataChanged = true;
     }
-    if (local.linkedDefault) {
-        for (const [field, value] of Object.entries(base)) {
-            const key = field === 'text' ? 'note_prompt' : `note_${field}`;
-            if (ctx.chatMetadata[key] !== value) {
-                ctx.chatMetadata[key] = value;
-                metadataChanged = true;
-            }
+    // SillyTavern emits CHAT_CREATED/GROUP_CHAT_CREATED after CHAT_CHANGED.
+    // The ordinary change handler may have already initialized an empty state.
+    if (newChat && local.defaultsApplied !== true) {
+        if (!local.items.length) {
+            local.items = structuredClone(global.items);
+            local.title = global.title;
+            local.nativeCollapsed = Boolean(global.nativeCollapsed);
+            if (global.previousInterval !== undefined) local.previousInterval = global.previousInterval;
         }
-        local.lastMirrored = currentDefault;
+        local.defaultsApplied = true;
+        metadataChanged = true;
     }
-    return { settingsChanged, metadataChanged, linked: local.linkedDefault };
+    return { settingsChanged, metadataChanged };
 }
 
 export function due(interval, chat) {
@@ -119,20 +105,13 @@ export function prompts(ctx) {
     const global = globalState(ctx.extensionSettings);
     const local = chatState(ctx.chatMetadata);
     const out = [];
-    const base = nativeNote(ctx.extensionSettings.note, true);
-    const localText = nativeNote(ctx.chatMetadata).text;
-    if (!local.linkedDefault && base.text.trim() && base.text !== localText && due(base.interval, ctx.chat)) {
-        out.push({ key: `${PREFIX}default`, ...base, scan: Boolean(ctx.extensionSettings.note.allowWIScan) });
-    }
-    for (const [scope, items] of [['common', global.items], ['chat', local.items]]) {
-        items.forEach((item, index) => {
-            itemSettings(item, global.legacyScan);
-            if (item.enabled && item.text.trim()) {
-                out.push({ key: `${PREFIX}${scope}:${String(index).padStart(6, '0')}`,
-                    text: item.text, depth: integer(item.depth), position: item.position, role: item.role, scan: Boolean(item.scan) });
-            }
-        });
-    }
+    local.items.forEach((item, index) => {
+        itemSettings(item, global.legacyScan);
+        if (item.enabled && item.text.trim()) {
+            out.push({ key: `${PREFIX}chat:${String(index).padStart(6, '0')}`,
+                text: item.text, depth: integer(item.depth), position: item.position, role: item.role, scan: Boolean(item.scan) });
+        }
+    });
     return out;
 }
 

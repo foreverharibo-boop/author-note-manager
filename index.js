@@ -35,28 +35,14 @@ function refreshPrompts() {
     }
 }
 
-function mirrorNativeFields(ctx) {
-    const $ = globalThis.jQuery;
-    $('#extension_floating_prompt').val(ctx.chatMetadata.note_prompt ?? '');
-    for (const field of ['depth', 'interval', 'role']) {
-        $(`#extension_floating_${field}`).val(ctx.chatMetadata[`note_${field}`]);
-    }
-    $('input[name="extension_floating_position"]').each(function () {
-        this.checked = Number(this.value) === ctx.chatMetadata.note_position;
-    });
-}
-
-function synchronize(render = false) {
+function synchronize(render = false, newChat = false) {
     if (syncing) return;
     syncing = true;
     try {
         const ctx = context();
-        const result = reconcile(ctx);
+        const result = reconcile(ctx, { newChat });
         if (result.settingsChanged) ctx.saveSettingsDebounced();
-        if (result.metadataChanged) {
-            mirrorNativeFields(ctx);
-            ctx.saveMetadataDebounced();
-        }
+        if (result.metadataChanged) ctx.saveMetadataDebounced();
         if (hasChat(ctx)) setFloatingPrompt();
         refreshPrompts();
         if (render) renderLists();
@@ -116,7 +102,7 @@ function foldControl(header, content, getCollapsed, setCollapsed) {
     return { update, button };
 }
 
-function renderCard(scope, item, owner, displayScope = scope) {
+function renderCard(scope, item, owner) {
     itemSettings(item, globalState(context().extensionSettings).legacyScan);
     const card = element('section', 'ani-card');
     card.dataset.enabled = String(item.enabled);
@@ -127,12 +113,9 @@ function renderCard(scope, item, owner, displayScope = scope) {
     title.placeholder = '항목 제목';
     title.setAttribute('aria-label', '항목 제목');
     // The rendered owner is checked so events from an old chat cannot edit a new one.
-    const displayedChat = displayScope === 'chat' ? state('chat') : null;
     const editable = () => owner.items.includes(item)
-        && (displayScope !== 'chat' || (hasChat(context()) && state('chat') === displayedChat))
-        && state(scope) === owner;
-    const updatePeer = () => { if (scope === 'common') renderLists(displayScope === 'chat' ? 'common' : 'chat'); };
-    const changed = () => { save(scope); refreshPrompts(); updatePeer(); };
+        && (scope !== 'chat' || hasChat(context())) && state(scope) === owner;
+    const changed = () => { save(scope); refreshPrompts(); };
     title.addEventListener('input', () => {
         if (!editable()) return;
         item.title = title.value;
@@ -234,8 +217,7 @@ function renderCard(scope, item, owner, displayScope = scope) {
     remove.type = 'button';
     remove.addEventListener('click', () => {
         if (!editable()) return;
-        const warning = scope === 'common' ? ' 모든 채팅에 적용되는 기본 항목도 함께 삭제됩니다.' : '';
-        if (!window.confirm(`“${item.title || '이름 없는 항목'}”을 삭제할까요?${warning}`)) return;
+        if (!window.confirm(`“${item.title || '이름 없는 항목'}”을 삭제할까요?`)) return;
         const index = owner.items.indexOf(item);
         if (index < 0) return;
         owner.items.splice(index, 1);
@@ -244,26 +226,19 @@ function renderCard(scope, item, owner, displayScope = scope) {
     });
     bottom.append(remove);
     const content = element('div', 'ani-content');
-    if (scope === 'common' && displayScope === 'chat') {
-        const linkedHint = '기본 작가노트와 연결된 항목입니다. 수정·켜기/끄기·삭제는 모든 채팅에 반영됩니다.';
-        content.append(element('p', 'ani-hint ani-common-link', linkedHint));
-        title.title = linkedHint;
-    }
     content.append(body, options, bottom);
     foldControl(top, content, () => item.collapsed, collapsed => {
         if (!editable()) return;
         item.collapsed = collapsed;
         save(scope);
-        updatePeer();
     });
     card.append(top, content);
     return card;
 }
 
-function renderLists(onlyScope = null) {
+function renderLists() {
     const ctx = context();
     for (const [scope, section] of sections) {
-        if (onlyScope && scope !== onlyScope) continue;
         section.list.replaceChildren();
         const available = scope === 'common' || hasChat(ctx);
         section.add.disabled = !available;
@@ -276,11 +251,9 @@ function renderLists(onlyScope = null) {
         const owner = state(scope, ctx);
         section.nativeTitle.value = owner.title;
         section.fold.update();
-        // Linked common cards share their source object; never copy them into chat metadata.
-        const sources = scope === 'chat' ? [['common', state('common', ctx)], ['chat', owner]] : [['common', owner]];
-        for (const [sourceScope, source] of sources) for (const item of source.items) {
+        for (const item of owner.items) {
             section.list.append(element('hr', 'sysHR'));
-            section.list.append(renderCard(sourceScope, item, source, scope));
+            section.list.append(renderCard(scope, item, owner));
         }
     }
     updateNativeToggles();
@@ -294,13 +267,7 @@ function updateNativeToggles() {
         section.toggle.input.checked = enabled;
         section.toggle.caption.textContent = enabled ? '켜짐' : '꺼짐';
         section.toggle.label.title = enabled ? '끄기' : '켜기';
-        if (scope === 'chat') {
-            const linked = hasChat(ctx) && state(scope, ctx).linkedDefault;
-            section.toggle.input.disabled = !hasChat(ctx) || linked;
-            section.linked.textContent = hasChat(ctx) && state(scope, ctx).linkedDefault
-                ? '기본 작가노트와 연결되어 있습니다. 켜기/끄기는 아래 기본 작가노트에서 관리합니다. 여기서 본문·깊이 등을 바꾸면 현재 채팅 전용으로 분리됩니다.'
-                : '이 첫 항목은 실리태번의 기존 작가노트와 같은 내용입니다.';
-        }
+        if (scope === 'chat') section.toggle.input.disabled = !hasChat(ctx);
     }
 }
 
@@ -310,8 +277,8 @@ function mountSection(scope, textareaId) {
     const container = textarea.parentElement;
     container.classList.add('ani-native-section');
     const intro = element('p', 'ani-hint', scope === 'common'
-        ? '공통 항목은 모든 채팅에 적용됩니다. 기존 기본 작가노트의 복사본은 연결하여 한 번만 넣고, 따로 수정한 채팅 노트는 보존합니다.'
-        : '기본 작가노트의 연결 항목과 이 채팅 전용 항목을 함께 표시합니다. 연결 항목의 수정은 모든 채팅에 반영됩니다.');
+        ? '새 채팅을 시작할 때 복사할 기본 항목입니다. 수정해도 이미 만들어진 채팅에는 영향을 주지 않습니다.'
+        : '이 채팅의 작가노트입니다. 수정·켜기/끄기·삭제는 기본 작가노트나 다른 채팅에 영향을 주지 않습니다.');
     // Replace only the old explanatory caption; all native controls retain their handlers.
     const oldCaption = container.querySelector(':scope > small');
     if (oldCaption) oldCaption.classList.add('ani-original-caption');
@@ -337,8 +304,6 @@ function mountSection(scope, textareaId) {
     });
     header.append(toggle.label, nativeTitle);
     container.insertBefore(header, textarea);
-    const linked = element('p', 'ani-hint ani-linked');
-    if (scope === 'chat') container.insertBefore(linked, textarea);
     // Move, rather than recreate, native fields so their values and handlers survive.
     const nativeContent = element('div', 'ani-content ani-native-content');
     while (header.nextSibling) nativeContent.append(header.nextSibling);
@@ -361,7 +326,7 @@ function mountSection(scope, textareaId) {
         list.lastElementChild?.querySelector('.ani-title')?.focus();
     });
     container.append(list, add);
-    sections.set(scope, { list, add, nativeTitle, toggle, linked, fold });
+    sections.set(scope, { list, add, nativeTitle, toggle, fold });
     return true;
 }
 
@@ -380,6 +345,9 @@ function initialize() {
     globalThis.jQuery(document).on('input.authorNoteItems change.authorNoteItems', nativeSelector, () => synchronize());
     const ctx = context();
     ctx.eventSource.on(ctx.eventTypes.CHAT_CHANGED, () => synchronize(true));
+    for (const event of new Set([ctx.eventTypes.CHAT_CREATED, ctx.eventTypes.GROUP_CHAT_CREATED].filter(Boolean))) {
+        ctx.eventSource.on(event, () => synchronize(true, true));
+    }
     ctx.eventSource.on(ctx.eventTypes.GENERATION_AFTER_COMMANDS, () => synchronize());
     synchronize(true);
 }
